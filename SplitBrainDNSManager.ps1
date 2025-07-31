@@ -416,7 +416,7 @@ $btnAddRecord.Add_Click({
         if ($recordName -and $recordType -and $recordData) {
             try {
                 Add-Record -Name $recordName -ZoneName $zoneName -ZoneScope $scopeName -RecordType $recordType -RecordData $recordData
-                Show-Info "$RecordType Record '$ZoneScope' added for Zone '$ZoneName' and Scope '$ZoneScope'."
+                Show-Info "$recordType Record '$recordName' added for Zone '$zoneName' and Scope '$scopeName'."
                 Update-Records
             }
             catch {
