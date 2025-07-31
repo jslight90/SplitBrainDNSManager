@@ -20,6 +20,14 @@
 
 #>
 
+# Check if the script is running as Administrator
+If (-Not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    # Relaunch the script with elevated privileges
+    $arguments = "& '" + $MyInvocation.MyCommand.Definition + "'"
+    Start-Process powershell -ArgumentList $arguments -Verb RunAs
+    Exit
+}
+
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 # --- Helper Functions ------------------------------------------------------
