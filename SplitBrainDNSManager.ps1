@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     This script helps to manage Split-Brain DNS on Windows Server
 
@@ -14,6 +14,8 @@
     Date: 2025/07/30
     Version: 1.0
     Initial release.
+    Version: 1.1
+    Added Import and Export buttons
 
 .LINK
     GitHub: https://github.com/jslight90
@@ -28,7 +30,7 @@ If (-Not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     Exit
 }
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, System.Data
 
 # --- Helper Functions ------------------------------------------------------
 
@@ -104,12 +106,11 @@ function Update-ZoneScopes {
             }
         }
 
-        $dgScopes.Rows.Clear()
+        $dtScopes.Rows.Clear() | Out-Null
         foreach ($row in $all) {
-            $index = $dgScopes.Rows.Add()
-            $dgScopes.Rows[$index].Cells[0].Value = $row.Name
-            $dgScopes.Rows[$index].Cells[1].Value = $row.Zone
+            $dtScopes.Rows.Add($row.Name, $row.Zone) | Out-Null
         }
+        $dgScopes.Refresh()
     } catch {
         Show-Error "Failed loading scopes: $_"
     }
@@ -117,13 +118,11 @@ function Update-ZoneScopes {
 
 function Update-ClientSubnets {
     try {
-        $dgSubnets.Rows.Clear()
+        $dtSubnets.Rows.Clear() | Out-Null
         foreach ($row in Get-ClientSubnets) {
-            $index = $dgSubnets.Rows.Add()
-            $dgSubnets.Rows[$index].Cells[0].Value = $row.Name
-            $dgSubnets.Rows[$index].Cells[1].Value = $row.IPV4Subnet -join ", "
-            $dgSubnets.Rows[$index].Cells[2].Value = $row.IPv6Subnet -join ", "
+            $dtSubnets.Rows.Add($row.Name, $row.IPV4Subnet -join ', ', $row.IPv6Subnet -join ', ') | Out-Null
         }
+        $dgSubnets.Refresh()
     }
     catch {
         Show-Error "Failed loading client subnets: $_"
@@ -154,16 +153,11 @@ function Update-QueryResolutionPolicies {
             }
         }
 
-        $dgPolicies.Rows.Clear()
+        $dtPolicies.Rows.Clear() | Out-Null
         foreach ($row in $all) {
-            $index = $dgPolicies.Rows.Add()
-            $dgPolicies.Rows[$index].Cells[0].Value = $row.Name
-            $dgPolicies.Rows[$index].Cells[1].Value = $row.Zone
-            $dgPolicies.Rows[$index].Cells[2].Value = $row.Scope
-            $dgPolicies.Rows[$index].Cells[3].Value = $row.Subnet
-            $dgPolicies.Rows[$index].Cells[4].Value = $row.Action
-            $dgPolicies.Rows[$index].Cells[5].Value = $row.Enabled
+            $dtPolicies.Rows.Add($row.Name, $row.Zone, $row.Scope, $row.Subnet, $row.Action, $row.Enabled) | Out-Null
         }
+        $dgPolicies.Refresh()
     }
     catch {
         Show-Error "Failed loading query resolution polcies: $_"
@@ -195,16 +189,90 @@ function Update-Records {
             }
         }
 
-        $dgRecords.Rows.Clear()
+        $dtRecords.Rows.Clear() | Out-Null
         foreach ($row in $all) {
-            $index = $dgRecords.Rows.Add()
-            $dgRecords.Rows[$index].Cells[0].Value = $row.Name
-            $dgRecords.Rows[$index].Cells[1].Value = $row.Type
-            $dgRecords.Rows[$index].Cells[2].Value = $row.Data
+            $dtRecords.Rows.Add($row.Name, $row.Type, $row.Data) | Out-Null
         }
+        $dgRecords.Refresh()
     }
     catch {
         Show-Error "Failed loading resource records: $_"
+    }
+}
+
+function Add-Record {
+    [CmdletBinding()]
+    param (
+        [string]$Name,
+        [String]$ZoneName,
+        [string]$ZoneScope,
+        [string]$RecordType,
+        [string]$RecordData
+    )
+    
+    switch ($RecordType) {
+        'A'     {
+            Add-DnsServerResourceRecordA -ZoneName $ZoneName -ZoneScope $ZoneScope -Name $Name -IPv4Address $RecordData
+        }
+        'CNAME' {
+            Add-DnsServerResourceRecordCName -ZoneName $ZoneName -ZoneScope $ZoneScope -Name $Name -HostNameAlias $RecordData
+        }
+        'TXT'   {
+            Add-DnsServerResourceRecord -Txt -ZoneName $ZoneName -ZoneScope $ZoneScope -Name $Name -DescriptiveText $RecordData
+        }
+        'PTR'   {
+            Add-DnsServerResourceRecordPtr -ZoneName $ZoneName -ZoneScope $ZoneScope -Name $Name -PtrDomainName $RecordData
+        }
+        Default {
+            # unsupported record type, silently continue
+            Write-Host "Unable to add $RecordType record."
+        }
+    }
+}
+
+function Import-FromCsv {
+    $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    $openFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*"
+    $openFileDialog.Title = "Open CSV Import"
+
+    if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $openPath = $openFileDialog.FileName
+        try {
+            $data = Import-Csv -Path $openPath
+            return $data
+        }
+        catch {
+            Show-Error "Error during import: $_"
+        }
+    } else {
+        Write-host "Import cancelled by user."
+    }
+}
+
+function Export-GridViewToCsv {
+    [CmdletBinding()]
+    param (
+        [System.Windows.Forms.DataGridView]$DataGridView
+    )
+    
+    $date = Get-Date -Format "yyyy-MM-dd"
+    $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+    $saveFileDialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*"
+    $saveFileDialog.Title = "Select CSV Export Location"
+    $saveFileDialog.FileName = "SplitBrain_Export_$date.csv" # default filename
+
+    if ($saveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $savePath = $saveFileDialog.FileName
+
+        try {
+            $DataGridView.Rows | Select-Object -ExpandProperty DataBoundItem | Export-Csv -Path $savePath -NoTypeInformation
+            Show-Info "Export saved to $savePath."
+        }
+        catch {
+            Show-Error "Error during export: $_"
+        }
+    } else {
+        Write-Host "Export cancelled by user."
     }
 }
 
@@ -235,6 +303,11 @@ $records.Text = 'Resource Records'
 $records.Size = New-Object System.Drawing.Size(1200,800)
 $records.StartPosition = 'CenterScreen'
 
+$dtRecords = New-Object System.Data.DataTable
+$dtRecords.Columns.Add('Name') | Out-Null
+$dtRecords.Columns.Add('Type') | Out-Null
+$dtRecords.Columns.Add('Data') | Out-Null
+
 $dgRecords = New-Object System.Windows.Forms.DataGridView
 $dgRecords.Dock = 'Top'
 $dgRecords.Height = 690
@@ -244,10 +317,7 @@ $dgRecords.EditMode = 'EditProgrammatically'
 $dgRecords.MultiSelect = $false;
 $dgRecords.AllowUserToAddRows = $false
 $dgRecords.AllowUserToDeleteRows = $false
-$dgRecords.ColumnCount = 3
-$dgRecords.Columns[0].Name = "Name"
-$dgRecords.Columns[1].Name = "Type"
-$dgRecords.Columns[2].Name = "Data"
+$dgRecords.DataSource = $dtRecords
 $records.Controls.Add($dgRecords)
 
 $btnRefeshRecords          = New-Object System.Windows.Forms.Button
@@ -265,7 +335,17 @@ $btnRemoveRecord.Text      = 'Remove'
 $btnRemoveRecord.Location  = '230,700'
 $btnRemoveRecord.Size      = '100,30'
 
-$records.Controls.AddRange(@($btnRefeshRecords,$btnAddRecord,$btnRemoveRecord))
+$btnImportRecords          = New-Object System.Windows.Forms.Button
+$btnImportRecords.Text     = 'Import'
+$btnImportRecords.Location = '970,700'
+$btnImportRecords.Size     = '100,30'
+
+$btnExportRecords          = New-Object System.Windows.Forms.Button
+$btnExportRecords.Text     = 'Export'
+$btnExportRecords.Location = '1080,700'
+$btnExportRecords.Size     = '100,30'
+
+$records.Controls.AddRange(@($btnRefeshRecords,$btnAddRecord,$btnRemoveRecord,$btnImportRecords,$btnExportRecords))
 
 $btnRefeshRecords.Add_Click({ Update-Records })
 
@@ -335,24 +415,8 @@ $btnAddRecord.Add_Click({
 
         if ($recordName -and $recordType -and $recordData) {
             try {
-                switch ($recordType) {
-                    'A'     {
-                        Add-DnsServerResourceRecordA -ZoneName $zoneName -ZoneScope $scopeName -Name $recordName -IPv4Address $recordData
-                    }
-                    'CNAME' {
-                        Add-DnsServerResourceRecordCName -ZoneName $zoneName -ZoneScope $scopeName -Name $recordName -HostNameAlias $recordData
-                    }
-                    'TXT'   {
-                        Add-DnsServerResourceRecord -Txt -ZoneName $zoneName -ZoneScope $scopeName -Name $recordName -DescriptiveText $recordData
-                    }
-                    'PTR'   {
-                        Add-DnsServerResourceRecordPtr -ZoneName $zoneName -ZoneScope $scopeName -Name $recordName -PtrDomainName $recordData
-                    }
-                    Default {
-                        Show-Error "Unsuppored record type: $recordType"
-                    }
-                }
-                Show-Info "$recordType Record '$scopeName' added for Zone '$zoneName' and Scope '$scopeName'."
+                Add-Record -Name $recordName -ZoneName $zoneName -ZoneScope $scopeName -RecordType $recordType -RecordData $recordData
+                Show-Info "$RecordType Record '$ZoneScope' added for Zone '$ZoneName' and Scope '$ZoneScope'."
                 Update-Records
             }
             catch {
@@ -420,8 +484,29 @@ $btnRemoveRecord.Add_Click({
     }
 })
 
+$btnImportRecords.Add_Click({
+    $import = Import-FromCsv
+    if ($import -and @($import).Count -gt 0) {
+        foreach ($row in $import) {
+            try {
+                Add-Record -Name $row.Name -ZoneName $script:recordsZone -ZoneScope $script:recordsScope -RecordType $row.Type -RecordData $row.Data
+            }
+            catch {
+                Write-Host "Unable to add $($row.Type) record '$($row.Name)' with data '$($row.Data)':`n$_"
+            }
+        }
+        Show-Info "Imported records."
+        Update-Records
+    }  
+})
+
+$btnExportRecords.Add_Click({ Export-GridViewToCsv -DataGridView $dgRecords })
 
 # --- Tab 1: Zone Scopes and Records ---------------------------------------------------
+
+$dtScopes = New-Object System.Data.DataTable
+$dtScopes.Columns.Add('Scope Name') | Out-Null
+$dtScopes.Columns.Add('Zone') | Out-Null
 
 $dgScopes = New-Object System.Windows.Forms.DataGridView
 $dgScopes.Dock = 'Top'
@@ -432,9 +517,7 @@ $dgScopes.EditMode = 'EditProgrammatically'
 $dgScopes.MultiSelect = $false;
 $dgScopes.AllowUserToAddRows = $false
 $dgScopes.AllowUserToDeleteRows = $false
-$dgScopes.ColumnCount = 2
-$dgScopes.Columns[0].Name = "Scope Name"
-$dgScopes.Columns[1].Name = "Zone"
+$dgScopes.DataSource = $dtScopes
 $tabs['Zone Scopes and Records'].Controls.Add($dgScopes)
 
 $btnRefreshScopes          = New-Object System.Windows.Forms.Button
@@ -457,7 +540,17 @@ $btnRemoveScope.Text       = 'Remove'
 $btnRemoveScope.Location   = '340,500'
 $btnRemoveScope.Size       = '100,30'
 
-$tabs['Zone Scopes and Records'].Controls.AddRange(@($btnRefreshScopes,$btnAddScope,$btnEditRecords,$btnRemoveScope))
+$btnImportScopes           = New-Object System.Windows.Forms.Button
+$btnImportScopes.Text      = 'Import'
+$btnImportScopes.Location  = '670,500'
+$btnImportScopes.Size      = '100,30'
+
+$btnExportScopes           = New-Object System.Windows.Forms.Button
+$btnExportScopes.Text      = 'Export'
+$btnExportScopes.Location  = '780,500'
+$btnExportScopes.Size      = '100,30'
+
+$tabs['Zone Scopes and Records'].Controls.AddRange(@($btnRefreshScopes,$btnAddScope,$btnEditRecords,$btnRemoveScope,$btnImportScopes,$btnExportScopes))
 
 $btnRefreshScopes.Add_Click({ Update-ZoneScopes })
 Update-ZoneScopes
@@ -591,7 +684,30 @@ $btnRemoveScope.Add_Click({
     }
 })
 
+$btnImportScopes.Add_Click({
+    $import = Import-FromCsv
+    if ($import -and @($import).Count -gt 0) {
+        foreach ($row in $import) {
+            try {
+                Add-DnsServerZoneScope -ZoneName $row.Zone -Name $row.'Scope Name'
+            }
+            catch {
+                Write-Host "Unable to add Zone Scope '$($row.'Scope Name')' for Zone '$($row.Zone)':`n$_"
+            }
+        }
+        Show-Info "Imported Zone Scopes."
+        Update-ZoneScopes
+    }
+})
+
+$btnExportScopes.Add_Click({ Export-GridViewToCsv -DataGridView $dgScopes })
+
 # --- Tab 2: DNS Client Subnets ---------------------------------------------------
+
+$dtSubnets = New-Object System.Data.DataTable
+$dtSubnets.Columns.Add('Subnet Name') | Out-Null
+$dtSubnets.Columns.Add('IPv4 Address(es)') | Out-Null
+$dtSubnets.Columns.Add('IPv6 Address(es)') | Out-Null
 
 $dgSubnets = New-Object System.Windows.Forms.DataGridView
 $dgSubnets.Dock = 'Top'
@@ -602,10 +718,7 @@ $dgSubnets.EditMode = 'EditProgrammatically'
 $dgSubnets.MultiSelect = $false;
 $dgSubnets.AllowUserToAddRows = $false
 $dgSubnets.AllowUserToDeleteRows = $false
-$dgSubnets.ColumnCount = 3
-$dgSubnets.Columns[0].Name = "Subnet Name"
-$dgSubnets.Columns[1].Name = "IPv4 Address(es)"
-$dgSubnets.Columns[2].Name = "IPv6 Address(es)"
+$dgSubnets.DataSource = $dtSubnets
 $tabs['DNS Client Subnets'].Controls.Add($dgSubnets)
 
 $btnRefreshSubnets          = New-Object System.Windows.Forms.Button
@@ -623,7 +736,17 @@ $btnRemoveSubnet.Text       = 'Remove'
 $btnRemoveSubnet.Location   = '230,500'
 $btnRemoveSubnet.Size       = '100,30'
 
-$tabs['DNS Client Subnets'].Controls.AddRange(@($btnRefreshSubnets,$btnAddSubnet,$btnRemoveSubnet))
+$btnImportSubnets           = New-Object System.Windows.Forms.Button
+$btnImportSubnets.Text      = 'Import'
+$btnImportSubnets.Location  = '670,500'
+$btnImportSubnets.Size      = '100,30'
+
+$btnExportSubnets           = New-Object System.Windows.Forms.Button
+$btnExportSubnets.Text      = 'Export'
+$btnExportSubnets.Location  = '780,500'
+$btnExportSubnets.Size      = '100,30'
+
+$tabs['DNS Client Subnets'].Controls.AddRange(@($btnRefreshSubnets,$btnAddSubnet,$btnRemoveSubnet,$btnImportSubnets,$btnExportSubnets))
 
 $btnRefreshSubnets.Add_Click({ Update-ClientSubnets })
 Update-ClientSubnets
@@ -739,7 +862,33 @@ $btnRemoveSubnet.Add_Click({
     }
 })
 
+$btnImportSubnets.Add_Click({
+    $import = Import-FromCsv
+    if ($import -and @($import).Count -gt 0) {
+        foreach ($row in $import) {
+            try {
+                Add-DnsServerClientSubnet -Name $row.'Subnet Name' -IPv4Subnet $row.'IPv4 Address(es)'.Split(',')
+            }
+            catch {
+                Write-Host "Unable to add DNS Client Subnet '$($row.'Subnet Name')':`n$_"
+            }
+        }
+        Show-Info "Imported DNS Client Subnets."
+        Update-ClientSubnets
+    }
+})
+
+$btnExportSubnets.Add_Click({ Export-GridViewToCsv -DataGridView $dgSubnets })
+
 # --- Tab 3: Query Resolution Policies ---------------------------------------------------
+
+$dtPolicies = New-Object System.Data.DataTable
+$dtPolicies.Columns.Add('Policy Name') | Out-Null
+$dtPolicies.Columns.Add('Zone') | Out-Null
+$dtPolicies.Columns.Add('Scope Name') | Out-Null
+$dtPolicies.Columns.Add('Subnet Name') | Out-Null
+$dtPolicies.Columns.Add('Action') | Out-Null
+$dtPolicies.Columns.Add('Enabled') | Out-Null
 
 $dgPolicies = New-Object System.Windows.Forms.DataGridView
 $dgPolicies.Dock = 'Top'
@@ -750,13 +899,7 @@ $dgPolicies.EditMode = 'EditProgrammatically'
 $dgPolicies.MultiSelect = $false;
 $dgPolicies.AllowUserToAddRows = $false
 $dgPolicies.AllowUserToDeleteRows = $false
-$dgPolicies.ColumnCount = 6
-$dgPolicies.Columns[0].Name = "Policy Name"
-$dgPolicies.Columns[1].Name = "Zone"
-$dgPolicies.Columns[2].Name = "Scope Name"
-$dgPolicies.Columns[3].Name = "Subnet Name"
-$dgPolicies.Columns[4].Name = "Action"
-$dgPolicies.Columns[5].Name = "Enabled"
+$dgPolicies.DataSource = $dtPolicies
 $tabs['Query Resolution Policies'].Controls.Add($dgPolicies)
 
 $btnRefreshPolicies          = New-Object System.Windows.Forms.Button
@@ -774,7 +917,17 @@ $btnRemovePolicy.Text       = 'Remove'
 $btnRemovePolicy.Location   = '230,500'
 $btnRemovePolicy.Size       = '100,30'
 
-$tabs['Query Resolution Policies'].Controls.AddRange(@($btnRefreshPolicies,$btnAddPolicy,$btnRemovePolicy))
+$btnImportPolicies           = New-Object System.Windows.Forms.Button
+$btnImportPolicies.Text      = 'Import'
+$btnImportPolicies.Location  = '670,500'
+$btnImportPolicies.Size      = '100,30'
+
+$btnExportPolicies           = New-Object System.Windows.Forms.Button
+$btnExportPolicies.Text      = 'Export'
+$btnExportPolicies.Location  = '780,500'
+$btnExportPolicies.Size      = '100,30'
+
+$tabs['Query Resolution Policies'].Controls.AddRange(@($btnRefreshPolicies,$btnAddPolicy,$btnRemovePolicy,$btnImportPolicies,$btnExportPolicies))
 
 $btnRefreshPolicies.Add_Click({ Update-QueryResolutionPolicies })
 Update-QueryResolutionPolicies
@@ -941,6 +1094,24 @@ $btnRemovePolicy.Add_Click({
         }
     }
 })
+
+$btnImportPolicies.Add_Click({
+    $import = Import-FromCsv
+    if ($import -and @($import).Count -gt 0) {
+        foreach ($row in $import) {
+            try {
+                Add-DnsServerQueryResolutionPolicy -Name $row.'Policy Name' -ZoneName $row.Zone -ZoneScope $row.'Scope Name' -ClientSubnet "EQ,$($row.'Subnet Name')" -Action $row.Action
+            }
+            catch {
+                Write-Host "Unable to add Query Resolution Policy '$($row.'Polcy Name')' for Zone '$($row.Zone)' and Scope '$($row.'Scope Name')':`n$_"
+            }
+        }
+        Show-Info "Imported Query Resolution Policies."
+        Update-QueryResolutionPolicies
+    }
+})
+
+$btnExportPolicies.Add_Click({ Export-GridViewToCsv -DataGridView $dgPolicies })
 
 # --- Start GUI -------------------------------------------------------------
 [void] $form.ShowDialog()
